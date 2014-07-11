@@ -6,7 +6,7 @@ description := "S3 Plugin for sbt"
 
 version := "0.8"
 
-organization := "com.typesafe.sbt"
+organization := "ca.lakshmanan.sbt"
 
 organizationName := "Typesafe"
 
