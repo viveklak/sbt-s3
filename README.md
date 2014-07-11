@@ -4,10 +4,17 @@
 
 *sbt-s3* is a simple sbt plugin that can manipulate objects on Amazon S3.
 
+This is a fork of https://github.com/sbt/sbt-s3. This version allows specifying the S3 endpoint (read region) and bucket to
+be specified explicitly instead of co-opting '''host''' - which didn't work for non-US standard regions.
+
+Also tries to avoid downloading stuff when a local version already exists. Currently aborted the use of ETags to detect similarity
+in favour of content length since some of my files are multi-part uploaded and the ETags seem to have different semantics for such
+files. Will consider adding that in later.
+
 ## Usage
 
 * add to your project/plugin.sbt the line:
-   `addSbtPlugin("com.typesafe.sbt" % "sbt-s3" % "0.8")`
+   `addSbtPlugin("lakshmanan.ca.sbt" % "sbt-s3" % "0.8")`
 * then add to your build.sbt the line:
    `s3Settings`
  
@@ -24,7 +31,7 @@ Here is a complete example:
 
 project/plugin.sbt:
     
-    addSbtPlugin("com.typesafe.sbt" % "sbt-s3" % "0.8")
+    addSbtPlugin("lakshmanan.ca.sbt" % "sbt-s3" % "0.8")
 
 build.sbt:
 
@@ -34,14 +41,15 @@ build.sbt:
 
     mappings in upload := Seq((new java.io.File("a"),"zipa.txt"),(new java.io.File("b"),"pongo/zipb.jar"))
 
-    host in upload := "s3sbt-test.s3.amazonaws.com"
+    endpoint in upload := "s3-us-west-2.amazonaws.com"
 
+    bucket in upload := "blah-blah" 
     credentials += Credentials(Path.userHome / ".s3credentials")
 
 ~/.s3credentials:
 
     realm=Amazon S3
-    host=s3sbt-test.s3.amazonaws.com
+    host=s3-us-west-2.amazonaws.com # You need this regardless, because sbt Credentials needs it :\
     user=<Access Key ID>
     password=<Secret Access Key>
 

@@ -7,7 +7,9 @@ import com.amazonaws._
 import auth._,services.s3._
 import model._
 import org.apache.commons.lang.StringUtils.removeEndIgnoreCase
-
+import java.security.MessageDigest
+import java.math.BigInteger
+import java.io.FileInputStream
 /**
   * S3Plugin is a simple sbt plugin that can manipulate objects on Amazon S3.
   *
@@ -33,7 +35,8 @@ import org.apache.commons.lang.StringUtils.removeEndIgnoreCase
   *  - ~/.s3credentials:
   * {{{
   * realm=Amazon S3
-  * host=s3sbt-test.s3.amazonaws.com
+  * host=s3sbt-test.s3.amazonaws.com *or* s3-us-west-2.amazonaws.com
+  * bucket=s3sbt-test
   * user=<Access Key ID>
   * password=<Secret Access Key>
   * }}}
@@ -115,11 +118,15 @@ object S3Plugin extends sbt.Plugin {
     val delete=TaskKey[Unit]("s3-delete","Delete files from an S3 bucket.")
 
   /**
-    * A string representing the S3 bucket name, in one of two forms:
-    *  1. "mybucket.s3.amazonaws.com", where "mybucket" is the bucket name, or
-    *  1. "mybucket", for instance in case the name is a fully qualified hostname used in a CNAME
+    * A string representing the S3 endpoint to hit, e.g.:
+    *  1. "s3.amazonaws.com", where "mybucket" is the bucket name
     */
-    val host=SettingKey[String]("s3-host","Host used by the S3 operation, either \"mybucket.s3.amazonaws.com\" or \"mybucket\".")
+    val endpoint=SettingKey[String]("s3-endpoint","Host used by the S3 operation, either \"s3.amazonaws.com\" or \"s3-us-west-2.amazonaws.com\" etc.")
+
+  /**
+    * A string representing the S3 bucket name
+    */
+    val bucket=SettingKey[String]("s3-bucket","Bucket for the S3 Operation, e.g. \"my-bucket\"")
 
   /**
     * A list of S3 keys (pathnames) representing objects in a bucket on which a certain operation should be performed.
@@ -138,25 +145,23 @@ object S3Plugin extends sbt.Plugin {
 
   type Bucket=String
 
-  private def getClient(creds:Seq[Credentials],host:String) = {
-    val cred = Credentials.forHost(creds, host) match {
+  private def getClient(creds:Seq[Credentials], endPoint:String) = {
+    val cred = Credentials.forHost(creds, endPoint) match {
       case Some(cred) => cred
-      case None       => sys.error("Could not find S3 credentials for the host: "+host)
+      case None       => sys.error("Could not find S3 credentials for the endpoint: "+endPoint)
     }
     // username -> Access Key Id ; passwd -> Secret Access Key
     new AmazonS3Client(new BasicAWSCredentials(cred.userName, cred.passwd),
                        new ClientConfiguration().withProtocol(Protocol.HTTPS))
   }
-  private def getBucket(host:String) = removeEndIgnoreCase(host,".s3.amazonaws.com")
 
   private def s3InitTask[Item](thisTask:TaskKey[Unit], itemsKey:TaskKey[Seq[Item]],
                                op:(AmazonS3Client,Bucket,Item,Boolean)=>Unit,
                                msg:(Bucket,Item)=>String, lastMsg:(Bucket,Seq[Item])=>String )  =
 
-    (credentials in thisTask, itemsKey in thisTask, host in thisTask, progress in thisTask, streams) map {
-      (creds,items,host,progress,streams) =>
-        val client = getClient(creds, host)
-        val bucket = getBucket(host)
+    (credentials in thisTask, endpoint in thisTask, bucket in thisTask, itemsKey in thisTask,progress in thisTask, streams) map {
+      (creds,endpoint,bucket,items,progress,streams) =>
+        val client = getClient(creds, endpoint)
         items foreach { item =>
           streams.log.debug(msg(bucket,item))
           op(client,bucket,item,progress)
@@ -179,6 +184,26 @@ object S3Plugin extends sbt.Plugin {
     z.append(percent)
     z.append("%   ")
     z.mkString
+  }
+
+def calcMd5(file: File): String = {
+    val digest = MessageDigest.getInstance("MD5");
+    val buffer = new Array[Byte](1024 * 1024)
+    val is = new FileInputStream(file)
+
+    var len = is.read(buffer)
+    while (len > 0) {
+      digest.update(buffer, 0, len)
+      len = is.read(buffer)
+    }
+    val md5sum = digest.digest()
+    val bigInt = new BigInteger(1, md5sum)
+    var bigIntStr = bigInt.toString(16)
+    // pad to 32 length string
+    while (bigIntStr.length < 32) {
+      bigIntStr = "0" + bigIntStr
+    }
+    bigIntStr
   }
 
   private def addProgressListener(request:AmazonWebServiceRequest { // structural
@@ -225,7 +250,20 @@ object S3Plugin extends sbt.Plugin {
                                val request=new GetObjectRequest(bucket,key)
                                val objectMetadata=client.getObjectMetadata(bucket,key)
                                if (progress) addProgressListener(request,objectMetadata.getContentLength(),key)
-                               client.getObject(request,file)
+
+                               if (file.exists) {
+                                 val currLength = file.length
+                                 val remoteLength = objectMetadata.getContentLength()
+                                if (currLength == remoteLength ) {
+                                  println("Lengths " + currLength + " for " + key + " matches local version. Skipping... ")
+                                } else {
+                                 println("Local length " + currLength + " didn't match remote length " + remoteLength + ".  Overwriting..." )
+                                 client.getObject(request,file)
+                                }
+
+                               } else {
+                                client.getObject(request,file)
+                               }
                            },
                            { case (bucket,(file,key)) =>  "Downloading "+file.getAbsolutePath()+" as "+key+" from "+bucket },
                            {      (bucket,mapps) =>       "Downloaded "+mapps.length+" files from the S3 bucket \""+bucket+"\"." }
@@ -237,7 +275,8 @@ object S3Plugin extends sbt.Plugin {
                            { (bucket,keys1) =>        "Deleted "+keys1.length+" objects from the S3 bucket \""+bucket+"\"." }
                          ),
 
-    host := "",
+    endpoint := "",
+    bucket := "",
     keys := Seq(),
     mappings in download := Seq(),
     mappings in upload := Seq(),
